@@ -55,8 +55,8 @@ class FractalAnalyzer:
         if binary_image is None or np.sum(binary_image) == 0:
             return 0.0, 0.0, [], [], False
 
-        # Ensure binary 0/1
-        pixels = (binary_image > 0).astype(int)
+        # Ensure binary 0/1 (use uint8 to minimize memory)
+        pixels = (binary_image > 0).astype(np.uint8)
         
         # Minimal dimension
         H, W = pixels.shape
