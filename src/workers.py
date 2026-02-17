@@ -1,0 +1,111 @@
+import cv2
+from PyQt5.QtCore import QThread, pyqtSignal
+import time
+from src.core import FractalAnalyzer
+
+class AnalysisThread(QThread):
+    progress_updated = pyqtSignal(int, int) # current_frame, total_frames
+    frame_processed = pyqtSignal(dict) # result data dictionary
+    analysis_finished = pyqtSignal()
+    
+    def __init__(self, video_path, settings=None):
+        super().__init__()
+        self.video_path = video_path
+        self.settings = settings if settings else {}
+        self._is_running = True
+        self.analyzer = FractalAnalyzer()
+
+    def run(self):
+        try:
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                print(f"Error: Could not open video {self.video_path}")
+                return
+                
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            
+            # Sampling rate logic
+            sampling_rate = self.settings.get('sampling_rate', 1) # process every Nth frame
+            
+            frame_idx = 0
+            
+            while self._is_running: # Keep _is_running as per original code, user's example had is_stopped
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                    
+                if frame_idx % sampling_rate == 0:
+                    try:
+                        # Process frame
+                        # Process frame based on method
+                        analysis_type = self.settings.get('analysis_type', 'box_counting')
+                        
+                        D = 0.0
+                        R2 = 0.0
+                        log_scales = []
+                        log_counts = []
+                        edges = None
+                        
+                        # Check if we need grayscale first
+                        if len(frame.shape) == 3:
+                             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        else:
+                             gray = frame
+                        
+                        reliable = True
+
+                        if analysis_type == 'box_counting':
+                            method = self.settings.get('edge_method', 'canny')
+                            threshold_mode = self.settings.get('threshold_mode', 'auto')
+                            manual_thresholds = self.settings.get('manual_thresholds', (100, 200))
+                            blur_kernel_size = self.settings.get('blur_kernel_size', 5)
+                            blur_kernel = (blur_kernel_size, blur_kernel_size) if blur_kernel_size > 0 else None
+
+                            edges = self.analyzer.preprocess_frame(frame, method, threshold_mode, manual_thresholds, blur_kernel)
+                            D, R2, log_scales, log_counts, reliable = self.analyzer.box_count(edges)
+                            
+                        elif analysis_type == 'dbc':
+                            # Differential Box Counting (uses grayscale)
+                            D, R2, log_scales, log_counts = self.analyzer.differential_box_count(gray)
+                            edges = gray # Show grayscale in preview instead of edges?
+                            
+                        elif analysis_type == 'fourier':
+                            # Fourier Slope
+                            D, R2, log_scales, log_counts = self.analyzer.fourier_slope(gray)
+                            edges = gray # Show grayscale
+                        
+                        result = {
+                            'frame_idx': frame_idx,
+                            'timestamp': frame_idx / fps if fps > 0 else 0,
+                            'D': D,
+                            'R2': R2,
+                            'reliable': reliable,
+                            'scales': log_scales,
+                            'counts': log_counts,
+                            'edge_pixels': cv2.countNonZero(edges) if (edges is not None and analysis_type == 'box_counting') else 0,
+                            'frame': frame,
+                            'edges': edges,
+                            'method': analysis_type
+                        }
+                        
+                        self.frame_processed.emit(result)
+                        
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        print(f"Error processing frame {frame_idx}: {e}")
+                
+                self.progress_updated.emit(frame_idx, total_frames) # Changed from frame_idx + 1 to frame_idx
+                frame_idx += 1
+                
+            cap.release()
+            self.analysis_finished.emit()
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"Critical error in AnalysisThread: {e}")
+
+    def stop(self):
+        self._is_running = False
