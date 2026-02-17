@@ -2,9 +2,29 @@ import cv2
 import numpy as np
 import scipy.stats
 
+try:
+    import cupy as cp
+    GPU_AVAILABLE = True
+except ImportError:
+    cp = None
+    GPU_AVAILABLE = False
+
+
+def _to_gpu(arr):
+    return cp.asarray(arr) if GPU_AVAILABLE else arr
+
+
+def _to_cpu(arr):
+    return cp.asnumpy(arr) if GPU_AVAILABLE and isinstance(arr, cp.ndarray) else arr
+
+
 class FractalAnalyzer:
     def __init__(self):
-        pass
+        self.use_gpu = GPU_AVAILABLE
+
+    @property
+    def xp(self):
+        return cp if self.use_gpu and GPU_AVAILABLE else np
 
     def preprocess_frame(self, frame, method='canny', threshold_mode='auto', 
                          manual_thresholds=(100, 200), blur_kernel=(5, 5)):
@@ -55,53 +75,44 @@ class FractalAnalyzer:
         if binary_image is None or np.sum(binary_image) == 0:
             return 0.0, 0.0, [], [], False
 
+        xp = self.xp
+
         # Ensure binary 0/1 (use uint8 to minimize memory)
-        pixels = (binary_image > 0).astype(np.uint8)
-        
+        pixels = _to_gpu((binary_image > 0).astype(np.uint8))
+
         # Minimal dimension
         H, W = pixels.shape
         MinimalDim = min(H, W)
-        
-        # Determine box sizes (powers of 2)
-        # Cap largest box size to minimal dimension / 2 to ensure at least some division
-        # Smallest box size = 2
+
         scales = []
         counts = []
-        
-        # We can use a range of box sizes.
-        # Powers of 2 are standard: 2, 4, 8, 16...
-        # We stop when box size > MinimalDim / 2
+
         box_size = 2
         while box_size <= MinimalDim // 2:
-            # Pad image to be divisible by box_size
             pad_h = (box_size - (H % box_size)) % box_size
             pad_w = (box_size - (W % box_size)) % box_size
-            
+
             if pad_h > 0 or pad_w > 0:
-                padded = np.pad(pixels, ((0, pad_h), (0, pad_w)), mode='constant')
+                padded = xp.pad(pixels, ((0, pad_h), (0, pad_w)), mode='constant')
             else:
                 padded = pixels
-                
-            # Efficient block summing using reshape
-            # Reshape into (n_rows, box_size, n_cols, box_size)
-            # Then sum over axes 1 and 3
+
             sh = padded.shape
             reshaped = padded.reshape(sh[0] // box_size, box_size, sh[1] // box_size, box_size)
             block_sums = reshaped.sum(axis=(1, 3))
-            
-            # Count blocks with at least 1 edge pixel
-            non_empty_blocks = np.count_nonzero(block_sums)
-            
+
+            non_empty_blocks = int(xp.count_nonzero(block_sums))
+
             if non_empty_blocks > 0:
                 scales.append(1.0 / box_size)
                 counts.append(non_empty_blocks)
-            
+
             box_size *= 2
-            
+
         if len(scales) < 2:
             return 0.0, 0.0, [], [], False
 
-        # Fit linear regression to log-log data
+        # linregress on CPU (small arrays)
         log_scales = np.log(scales)
         log_counts = np.log(counts)
 
@@ -124,65 +135,44 @@ class FractalAnalyzer:
         """
         if grayscale_image is None:
             return 0.0, 0.0, [], []
-            
+
+        xp = self.xp
         H, W = grayscale_image.shape
         MinimalDim = min(H, W)
-        
+
+        pixels = _to_gpu(grayscale_image)
+
         scales = []
         counts = []
-        
-        # Box sizes
+
         box_size = 2
         while box_size <= MinimalDim // 4:
-            # Rescale image to a grid of size s x s? 
-            # DBC usually divides the image into grid of s x s boxes.
-            # Number of grid blocks along side: M = H // s
-            
-            # Simplified DBC:
-            # 1. Resize image to M x M grid (or just iterate blocks)
-            # 2. For each block (i, j):
-            #    n_r = ceil(max(I) / s') - ceil(min(I) / s')
-            #    Where s' is scale in z-direction. 
-            #    Often simplified to range: r = max - min + 1?
-            #    Let's use the prompt's definition: r(i,j) = max - min + 1
-            #    N(s) = sum(r(i,j))
-            
-            # Optimization: 
-            # View image as blocks
             pad_h = (box_size - (H % box_size)) % box_size
             pad_w = (box_size - (W % box_size)) % box_size
-            
+
             if pad_h > 0 or pad_w > 0:
-                padded = np.pad(grayscale_image, ((0, pad_h), (0, pad_w)), mode='edge')
+                padded = xp.pad(pixels, ((0, pad_h), (0, pad_w)), mode='edge')
             else:
-                padded = grayscale_image
-                
+                padded = pixels
+
             sh = padded.shape
-            # Reshape to (n_rows, box_size, n_cols, box_size)
             reshaped = padded.reshape(sh[0] // box_size, box_size, sh[1] // box_size, box_size)
-            
-            # min and max per block
+
             mins = reshaped.min(axis=(1, 3))
             maxs = reshaped.max(axis=(1, 3))
-            
-            # r = max - min + 1
-            # But we need to scale the intensity range to match grid scale?
-            # Prompt says: r(i,j) = max_intensity - min_intensity + 1
-            # Then D = slope of log(N(s)) vs log(1/s)
-            
+
             rs = maxs - mins + 1
-            N_s = np.sum(rs)
-            
+            N_s = int(xp.sum(rs))
+
             if N_s > 0:
                 scales.append(1.0 / box_size)
                 counts.append(N_s)
-                
+
             box_size *= 2
-            
+
         if len(scales) < 2:
             return 0.0, 0.0, [], []
-            
-        # Fit linear regression
+
         log_scales = np.log(scales)
         log_counts = np.log(counts)
         slope, _, r_value, _, _ = scipy.stats.linregress(log_scales, log_counts)
@@ -196,39 +186,34 @@ class FractalAnalyzer:
         """
         if grayscale_image is None:
             return 0.0, 0.0, [], []
-            
+
+        xp = self.xp
+        img_gpu = _to_gpu(grayscale_image.astype(np.float64))
+
         # FFT2
-        f = np.fft.fft2(grayscale_image)
-        fshift = np.fft.fftshift(f)
-        magnitude_spectrum = 20 * np.log(np.abs(fshift) + 1e-8)
-        
+        f = xp.fft.fft2(img_gpu)
+        fshift = xp.fft.fftshift(f)
+
         # Radial Profile
         h, w = grayscale_image.shape
         center = (h // 2, w // 2)
-        y, x = np.ogrid[:h, :w]
-        r = np.sqrt((x - center[1])**2 + (y - center[0])**2)
-        
-        # Bin by radius
+        y, x = xp.ogrid[:h, :w]
+        r = xp.sqrt((x - center[1])**2 + (y - center[0])**2)
+
         r_int = r.astype(int)
-        
-        # We want Power vs Frequency
-        # Power P(f) = |FT|^2
-        power_spectrum = np.abs(fshift)**2
-        
+
+        power_spectrum = xp.abs(fshift)**2
+
         # Radial average
-        tbin = np.bincount(r_int.ravel(), power_spectrum.ravel())
-        nr = np.bincount(r_int.ravel())
-        radial_profile = tbin / np.maximum(nr, 1)
-        
-        # Plot log(Power) vs log(Frequency)
-        # Frequency f is just r (radius in freq domain)
-        # Limit range to avoid DC component (0) and high freq noise
-        # Start from radius 1 to min(h,w)/2
+        tbin = xp.bincount(r_int.ravel(), power_spectrum.ravel())
+        nr = xp.bincount(r_int.ravel())
+        radial_profile = _to_cpu(tbin / xp.maximum(nr, 1))
+
+        # Back to CPU for linregress
         max_r = min(h, w) // 2
         freqs = np.arange(1, max_r)
         powers = radial_profile[1:max_r]
-        
-        # Remove zeros
+
         valid = (powers > 0)
         log_freqs = np.log(freqs[valid])
         log_powers = np.log(powers[valid])

@@ -15,6 +15,7 @@ import pandas as pd
 import cv2
 import json
 from src.workers import AnalysisThread
+from src.core import GPU_AVAILABLE
 
 # --- Dark Theme Colors ---
 BG_DARK = "#1a1a2e"
@@ -355,6 +356,15 @@ class MainWindow(QMainWindow):
         self.combo_analysis.currentIndexChanged.connect(self.toggle_edge_settings)
         layout.addRow("Analysis Method:", self.combo_analysis)
 
+        # GPU / CPU status indicator
+        if GPU_AVAILABLE:
+            self.lbl_compute = QLabel("Compute: GPU (CUDA)")
+            self.lbl_compute.setStyleSheet(f"color: {SUCCESS_GREEN}; font-weight: bold;")
+        else:
+            self.lbl_compute = QLabel("Compute: CPU")
+            self.lbl_compute.setStyleSheet(f"color: {TEXT_SECONDARY}; font-weight: bold;")
+        layout.addRow(self.lbl_compute)
+
         self.settings_panel.setLayout(layout)
 
     def toggle_edge_settings(self):
@@ -618,50 +628,55 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(current)
 
     def update_plots(self, result):
+        # Store only numeric data (not images) to prevent memory leak
+        frame = result.pop('frame', None)
+        edges = result.pop('edges', None)
         self.results_data.append(result)
 
-        # Update D(t) plot
-        timestamps = [r['timestamp'] for r in self.results_data]
-        Ds = [r['D'] for r in self.results_data]
+        # Throttle plot updates — only redraw plots every 3 frames
+        should_redraw_plots = len(self.results_data) % 3 == 0 or len(self.results_data) == 1
 
-        self.line_time.set_data(timestamps, Ds)
-        # Auto-scroll sliding window unless user has manually panned/zoomed
-        if not self._time_user_interacted:
-            t_now = timestamps[-1]
-            if t_now > self._time_window:
-                self.ax_time.set_xlim(t_now - self._time_window, t_now + 2)
-            else:
-                self.ax_time.set_xlim(0, self._time_window)
-        self.canvas_time.draw()
+        if should_redraw_plots:
+            # Update D(t) plot
+            timestamps = [r['timestamp'] for r in self.results_data]
+            Ds = [r['D'] for r in self.results_data]
 
-        # Update Log-Log plot
-        scales = result['scales']
-        counts = result['counts']
-        # Check if arrays are not empty. Use len() as they might be numpy arrays.
-        if len(scales) > 0 and len(counts) > 0:
-            self.line_log.set_data(scales, counts)
-            self.ax_log.relim()
-            self.ax_log.autoscale_view()
-            reliability = "" if result.get('reliable', True) else " [UNRELIABLE]"
-            title_text = f"Log-Log (D={result['D']:.2f}, R\u00b2={result['R2']:.2f})"
-            if reliability:
-                self.ax_log.set_title(title_text + reliability, color=ERROR_RED)
-            else:
-                self.ax_log.set_title(title_text, color=TEXT_PRIMARY)
+            self.line_time.set_data(timestamps, Ds)
+            # Auto-scroll sliding window unless user has manually panned/zoomed
+            if not self._time_user_interacted:
+                t_now = timestamps[-1]
+                if t_now > self._time_window:
+                    self.ax_time.set_xlim(t_now - self._time_window, t_now + 2)
+                else:
+                    self.ax_time.set_xlim(0, self._time_window)
+            self.canvas_time.draw()
 
-            method = result.get('method', 'box_counting')
-            if method == 'fourier':
-                self.ax_log.set_xlabel("log(Frequency)")
-                self.ax_log.set_ylabel("log(Power)")
-            else:
-                self.ax_log.set_xlabel("log(1/s)")
-                self.ax_log.set_ylabel("log(N(s))")
+            # Update Log-Log plot
+            scales = result['scales']
+            counts = result['counts']
+            # Check if arrays are not empty. Use len() as they might be numpy arrays.
+            if len(scales) > 0 and len(counts) > 0:
+                self.line_log.set_data(scales, counts)
+                self.ax_log.relim()
+                self.ax_log.autoscale_view()
+                reliability = "" if result.get('reliable', True) else " [UNRELIABLE]"
+                title_text = f"Log-Log (D={result['D']:.2f}, R\u00b2={result['R2']:.2f})"
+                if reliability:
+                    self.ax_log.set_title(title_text + reliability, color=ERROR_RED)
+                else:
+                    self.ax_log.set_title(title_text, color=TEXT_PRIMARY)
 
-            self.canvas_log.draw()
+                method = result.get('method', 'box_counting')
+                if method == 'fourier':
+                    self.ax_log.set_xlabel("log(Frequency)")
+                    self.ax_log.set_ylabel("log(Power)")
+                else:
+                    self.ax_log.set_xlabel("log(1/s)")
+                    self.ax_log.set_ylabel("log(N(s))")
 
-        # Update Images (Preview)
-        frame = result.get('frame')
-        edges = result.get('edges')
+                self.canvas_log.draw()
+
+        # Always update preview images (lightweight)
 
         if frame is not None:
             # Convert BGR to RGB
@@ -678,8 +693,9 @@ class MainWindow(QMainWindow):
             qt_image = QImage(edges.data, w, h, bytes_per_line, QImage.Format_Grayscale8)
             self.lbl_edges.setPixmap(QPixmap.fromImage(qt_image).scaled(self.lbl_edges.size(), Qt.KeepAspectRatio))
 
-        # Update Statistics & Histogram (every 5 frames)
-        if len(self.results_data) % 5 == 0:
+        # Update Statistics & Histogram (every 10 frames)
+        if len(self.results_data) % 10 == 0:
+            Ds = [r['D'] for r in self.results_data]
             self.update_stats(Ds)
 
     def update_stats(self, Ds):
