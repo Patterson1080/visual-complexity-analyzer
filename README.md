@@ -14,16 +14,16 @@ Research in environmental psychology suggests that people tend to prefer scenes 
 
 ## Getting Started
 
-### Requirements
+### Installation
 
-- Python 3.8+
-- Dependencies: `pip install PyQt5 matplotlib pandas opencv-python numpy scipy`
-
-### Running
-
-```
+```bash
+git clone https://github.com/Patterson1080/visual-complexity-analyzer.git
+cd visual-complexity-analyzer
+pip install -r requirements.txt
 python main.py
 ```
+
+**Requirements:** Python 3.8+
 
 ## How to Use
 
