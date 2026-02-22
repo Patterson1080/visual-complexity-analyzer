@@ -27,18 +27,38 @@ class AnalysisThread(QThread):
                 
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS)
-            
-            # Sampling rate logic
-            sampling_rate = self.settings.get('sampling_rate', 1) # process every Nth frame
-            
-            frame_idx = 0
-            
-            while self._is_running: # Keep _is_running as per original code, user's example had is_stopped
+
+            # Sampling rate
+            sampling_rate = self.settings.get('sampling_rate', 1)
+
+            # Clip range (seconds → frames)
+            clip_start_sec = self.settings.get('clip_start_sec', 0)
+            clip_end_sec   = self.settings.get('clip_end_sec', 0)
+
+            start_frame = int(clip_start_sec * fps) if fps > 0 else 0
+            start_frame = max(0, min(start_frame, total_frames - 1))
+
+            if clip_end_sec > 0:
+                end_frame = int(clip_end_sec * fps) if fps > 0 else total_frames
+                end_frame = max(start_frame + 1, min(end_frame, total_frames))
+            else:
+                end_frame = total_frames  # 00:00:00 end = full video
+
+            # Seek to start
+            if start_frame > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+            frame_idx = start_frame
+            clip_total = end_frame - start_frame  # for progress bar
+
+            while self._is_running:
+                if frame_idx >= end_frame:
+                    break
                 ret, frame = cap.read()
                 if not ret:
                     break
-                    
-                if frame_idx % sampling_rate == 0:
+
+                if (frame_idx - start_frame) % sampling_rate == 0:
                     try:
                         # Process frame
                         # Process frame based on method
@@ -123,7 +143,7 @@ class AnalysisThread(QThread):
                         traceback.print_exc()
                         print(f"Error processing frame {frame_idx}: {e}")
                 
-                self.progress_updated.emit(frame_idx, total_frames) # Changed from frame_idx + 1 to frame_idx
+                self.progress_updated.emit(frame_idx - start_frame, clip_total)
                 frame_idx += 1
                 
             cap.release()

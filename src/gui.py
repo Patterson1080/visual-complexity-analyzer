@@ -4,9 +4,9 @@ import ctypes
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
                              QHBoxLayout, QWidget, QPushButton, QFileDialog,
                              QProgressBar, QGroupBox, QFormLayout, QSpinBox,
-                             QDoubleSpinBox, QSlider,
+                             QDoubleSpinBox, QSlider, QTimeEdit,
                              QComboBox, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView)
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTime
 from PyQt5.QtGui import QImage, QPixmap
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -180,6 +180,35 @@ QSlider::handle:horizontal {{
 QSlider::sub-page:horizontal {{
     background-color: {ACCENT};
     border-radius: 3px;
+}}
+
+QTimeEdit {{
+    background-color: {BG_INPUT};
+    color: {TEXT_PRIMARY};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 4px 8px;
+    min-height: 24px;
+    font-family: monospace;
+    font-size: 13px;
+}}
+QTimeEdit:hover {{
+    border-color: {ACCENT};
+}}
+QTimeEdit::up-button, QTimeEdit::down-button {{
+    background-color: {BG_SURFACE};
+    border: none;
+    width: 16px;
+}}
+QTimeEdit::up-arrow {{
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid {TEXT_SECONDARY};
+}}
+QTimeEdit::down-arrow {{
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid {TEXT_SECONDARY};
 }}
 
 QTabWidget::pane {{
@@ -383,6 +412,32 @@ class MainWindow(QMainWindow):
         self.spin_sampling.setRange(1, 1000)
         self.spin_sampling.setValue(1)
         layout.addRow("Sampling Rate (Every N frames):", self.spin_sampling)
+
+        # Clip range: HH:MM:SS → HH:MM:SS (like VLC / media players)
+        clip_widget = QWidget()
+        clip_layout = QHBoxLayout(clip_widget)
+        clip_layout.setContentsMargins(0, 0, 0, 0)
+        clip_layout.setSpacing(6)
+
+        self.time_clip_start = QTimeEdit()
+        self.time_clip_start.setDisplayFormat("HH:mm:ss")
+        self.time_clip_start.setTime(QTime(0, 0, 0))
+        self.time_clip_start.setToolTip("Start analysis from this timestamp")
+
+        arrow_lbl = QLabel("→")
+        arrow_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 14px;")
+
+        self.time_clip_end = QTimeEdit()
+        self.time_clip_end.setDisplayFormat("HH:mm:ss")
+        self.time_clip_end.setTime(QTime(0, 0, 0))
+        self.time_clip_end.setToolTip(
+            "Stop analysis at this timestamp. Set to 00:00:00 to analyze to end of video.")
+
+        clip_layout.addWidget(self.time_clip_start)
+        clip_layout.addWidget(arrow_lbl)
+        clip_layout.addWidget(self.time_clip_end)
+        clip_layout.addStretch()
+        layout.addRow("Clip Range:", clip_widget)
 
         self.combo_method = QComboBox()
         self.combo_method.addItems(["canny", "sobel"])
@@ -689,6 +744,16 @@ class MainWindow(QMainWindow):
             self.btn_batch.setEnabled(True)
             self.results_data = []
 
+            # Set clip range from video duration
+            _cap = cv2.VideoCapture(path)
+            if _cap.isOpened():
+                _fps = _cap.get(cv2.CAP_PROP_FPS)
+                _total = int(_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                _dur = int(_total / _fps) if _fps > 0 else 0
+                _cap.release()
+                self.time_clip_start.setTime(QTime(0, 0, 0))
+                self.time_clip_end.setTime(QTime(_dur // 3600, (_dur % 3600) // 60, _dur % 60))
+
             # Clear plots
             self.ax_hist.clear()
             self.ax_hist.set_title("Distribution of D values")
@@ -707,6 +772,10 @@ class MainWindow(QMainWindow):
             self.line_log.set_data([], [])
             self.ax_log.relim()
             self.canvas_log.draw()
+
+    @staticmethod
+    def _qtime_to_sec(t):
+        return t.hour() * 3600 + t.minute() * 60 + t.second()
 
     def start_analysis(self):
         if not self.current_video_path:
@@ -727,6 +796,8 @@ class MainWindow(QMainWindow):
             'analysis_type': analysis_map.get(self.combo_analysis.currentText(), 'moisy_boxcount'),
             'moisy_threshold': self.spin_moisy_thresh.value(),
             'scale_range': (self.spin_scale_start.value(), self.spin_scale_end.value()),
+            'clip_start_sec': self._qtime_to_sec(self.time_clip_start.time()),
+            'clip_end_sec': self._qtime_to_sec(self.time_clip_end.time()),
         }
 
         self.analysis_thread = AnalysisThread(self.current_video_path, settings)
@@ -924,8 +995,8 @@ class MainWindow(QMainWindow):
             try:
                 df = pd.DataFrame(self.results_data)
                 df.to_csv(csv_path, index=False)
-                # Save publication-quality plots
-                self._save_fig_publication(self.fig_time, os.path.join(folder, f"fractal_timeseries_{base}.png"))
+                # Save publication-quality plots (full timeline for D(t))
+                self._save_timeseries_full(os.path.join(folder, f"fractal_timeseries_{base}.png"))
                 self._save_fig_publication(self.fig_log, os.path.join(folder, f"fractal_loglog_{base}.png"))
 
                 # Save JSON Summary
@@ -964,6 +1035,20 @@ class MainWindow(QMainWindow):
             self.btn_batch.setEnabled(True)
             self.progress_bar.setValue(self.progress_bar.maximum())
 
+    def _save_timeseries_full(self, path):
+        """Save the D(t) plot showing the complete timeline, regardless of current pan/zoom."""
+        if not self.results_data:
+            self._save_fig_publication(self.fig_time, path)
+            return
+        timestamps = [r['timestamp'] for r in self.results_data]
+        orig_xlim = self.ax_time.get_xlim()
+        t_min, t_max = min(timestamps), max(timestamps)
+        margin = max((t_max - t_min) * 0.02, 1)
+        self.ax_time.set_xlim(t_min - margin, t_max + margin)
+        self._save_fig_publication(self.fig_time, path)
+        self.ax_time.set_xlim(orig_xlim)
+        self.canvas_time.draw()
+
     def export_results(self):
         if not self.results_data:
             return
@@ -974,7 +1059,7 @@ class MainWindow(QMainWindow):
             df.to_csv(path, index=False)
             # Save publication-quality plots alongside CSV
             base = os.path.splitext(path)[0]
-            self._save_fig_publication(self.fig_time, f"{base}_timeseries.png")
+            self._save_timeseries_full(f"{base}_timeseries.png")
             self._save_fig_publication(self.fig_log, f"{base}_loglog.png")
             if len(self.results_data) >= 5:
                 self._save_fig_publication(self.fig_hist, f"{base}_histogram.png")
