@@ -35,9 +35,23 @@ python main.py
 
 ## Analysis Methods
 
-The app offers three different ways to calculate fractal dimension. Each has strengths depending on what you're analyzing.
+The app offers four different ways to calculate fractal dimension. Each has strengths depending on what you're analyzing.
 
-### Edge + Box Counting (Default)
+### Moisy Threshold + Box Counting (Default)
+
+**Best for:** Reproducing results from published research using Frédéric Moisy's MATLAB `boxcount` function.
+
+**How it works:** Converts each frame to grayscale, applies a simple brightness threshold to produce a binary (black/white) image, then runs a coarsening box-count: the image is repeatedly halved by combining 2×2 blocks via logical OR, building up counts at each power-of-2 scale. Fractal dimension is computed as the average of local log-log slopes over a configurable mid-range scale window — matching Moisy's MATLAB algorithm exactly.
+
+**When to use it:** When you need results that are directly comparable to collaborators using Moisy's MATLAB boxcount, or when you want a straightforward threshold-based measurement of binary image complexity. Validated against MATLAB output to within ±0.001 per frame.
+
+**Settings that matter:**
+- *Binarization Threshold:* Fraction of max brightness (0–1) above which pixels become foreground. Default `0.25` matches the published method
+- *Scale Range:* MATLAB-indexed range of local slopes to average. Default `4–8` uses mid-range scales, matching the standard published approach
+
+**Note:** This method intentionally uses no edge detection and no blurring. Typical D values on natural video are ~1.37–1.53, lower than the Edge + Box Counting method because dense binary blobs produce different box-count behavior than thin Canny edges.
+
+### Edge + Box Counting
 
 **Best for:** Analyzing the complexity of edges and outlines in a scene.
 
@@ -68,13 +82,24 @@ The app offers three different ways to calculate fractal dimension. Each has str
 
 **When to use it:** Specialized use — works well for images dominated by texture or noise-like patterns (ocean surfaces, cloud formations). Less reliable for typical video with mixed content like people, objects, and backgrounds.
 
+### Why do methods give different D values?
+
+The same video can yield different D values depending on the method — this is expected, not an error. Each method measures a different geometric property:
+
+| Factor | Edge + Box Counting | Moisy Threshold |
+|--------|--------------------|--------------------|
+| Preprocessing | Canny edges (thin, sparse) | Brightness threshold (dense blobs) |
+| Typical D on natural video | ~1.6–1.8 | ~1.37–1.53 |
+| FD computation | Global linear regression (all scales) | Local slopes averaged over mid-range |
+| MATLAB comparable | No | Yes (Moisy boxcount) |
+
 ## Understanding the Output
 
 ### Real-time Analysis Tab
 
 - **Original Frame** — The current video frame being analyzed
-- **Edge Detection** — The detected edges (for Edge + Box Counting method)
-- **Log-Log Plot** — Shows the mathematical relationship used to calculate D. Straighter lines = more reliable results. If marked `[UNRELIABLE]` in red, the R² fit is poor and the D value for that frame may not be meaningful
+- **Processed Frame** — The detected edges (Edge + Box Counting) or binarized image (Moisy method)
+- **Log-Log Plot** — Shows the mathematical relationship used to calculate D. For the Moisy method, gold markers highlight the scale range used to compute D, and the title shows D ± std. For other methods, if marked `[UNRELIABLE]` in red the R² fit is poor and the D value may not be meaningful
 - **D(t) Plot** — Fractal dimension over time, showing how visual complexity changes throughout the video
 
 ### Summary Tab
@@ -87,7 +112,9 @@ The app offers three different ways to calculate fractal dimension. Each has str
 | Setting | What it does |
 |---------|-------------|
 | Sampling Rate | Analyze every Nth frame. Set to `1` for every frame, `10` to skip 9 out of 10 frames (faster but less detailed) |
+| Analysis Method | Choose between Moisy Threshold + Box Counting (default), Edge + Box Counting, DBC, or Fourier Slope |
+| Binarization Threshold | *(Moisy only)* Brightness cutoff (0–1) for grayscale→binary conversion. Default `0.25` matches the published method |
+| Scale Range | *(Moisy only)* MATLAB-indexed range of local slopes to average. Default `4–8`. Wider range = smoother estimate; narrower = more sensitive to a specific scale |
 | Edge Method | `canny` = sharp edge detection, `sobel` = gradient-based (softer edges). Only applies to Edge + Box Counting |
-| Threshold Mode | `auto` = automatically determines edge sensitivity, `manual` = uses fixed values |
-| Blur Kernel Size | Smoothing applied before edge detection. Higher = less noise but less fine detail. Use odd numbers (1, 3, 5, 7...) |
-| Analysis Method | Choose between Edge + Box Counting, DBC, or Fourier Slope (see above) |
+| Threshold Mode | `auto` = automatically determines edge sensitivity, `manual` = uses fixed values. Only applies to Edge + Box Counting |
+| Blur Kernel Size | Smoothing applied before edge detection. Higher = less noise but less fine detail. Use odd numbers (1, 3, 5, 7...). Only applies to Edge + Box Counting |

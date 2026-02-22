@@ -1,4 +1,7 @@
+import math
+
 import cv2
+import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 import time
 from src.core import FractalAnalyzer
@@ -55,7 +58,23 @@ class AnalysisThread(QThread):
                         
                         reliable = True
 
-                        if analysis_type == 'box_counting':
+                        if analysis_type == 'moisy_boxcount':
+                            moisy_thresh = self.settings.get('moisy_threshold', 0.25)
+                            scale_range = self.settings.get('scale_range', (4, 8))
+                            D, D_std, n, r, df, bw = self.analyzer.analyze_frame_moisy(
+                                frame, threshold=moisy_thresh, scale_range=scale_range)
+                            # Padded size for metadata
+                            padded_p = math.ceil(math.log2(max(gray.shape)))
+                            padded_size = 2 ** padded_p
+                            # Use log(r) and log(n) for the log-log plot
+                            log_scales = np.log(r.astype(float)) if len(r) > 0 else []
+                            log_counts = np.log(n.astype(float)) if len(n) > 0 else []
+                            R2 = 0.0  # Not applicable for local-slope method
+                            reliable = True
+                            # Store binarized image as preview (uint8 for display)
+                            edges = (bw.astype(np.uint8) * 255)
+
+                        elif analysis_type == 'box_counting':
                             method = self.settings.get('edge_method', 'canny')
                             threshold_mode = self.settings.get('threshold_mode', 'auto')
                             manual_thresholds = self.settings.get('manual_thresholds', (100, 200))
@@ -64,7 +83,7 @@ class AnalysisThread(QThread):
 
                             edges = self.analyzer.preprocess_frame(frame, method, threshold_mode, manual_thresholds, blur_kernel)
                             D, R2, log_scales, log_counts, reliable = self.analyzer.box_count(edges)
-                            
+
                         elif analysis_type == 'dbc':
                             # Differential Box Counting (uses grayscale)
                             D, R2, log_scales, log_counts = self.analyzer.differential_box_count(gray)
@@ -88,6 +107,14 @@ class AnalysisThread(QThread):
                             'edges': edges,
                             'method': analysis_type
                         }
+
+                        # Moisy-specific fields
+                        if analysis_type == 'moisy_boxcount':
+                            result['D_std'] = D_std
+                            result['threshold'] = moisy_thresh
+                            result['padded_size'] = padded_size
+                            result['scale_range'] = f"{scale_range[0]}-{scale_range[1]}"
+                            result['df'] = df  # local slopes for log-log highlight
                         
                         self.frame_processed.emit(result)
                         

@@ -4,6 +4,7 @@ import ctypes
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
                              QHBoxLayout, QWidget, QPushButton, QFileDialog,
                              QProgressBar, QGroupBox, QFormLayout, QSpinBox,
+                             QDoubleSpinBox, QSlider,
                              QComboBox, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap
@@ -13,6 +14,7 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import pandas as pd
 import cv2
+import numpy as np
 import json
 from src.workers import AnalysisThread
 from src.core import GPU_AVAILABLE
@@ -133,6 +135,51 @@ QSpinBox::down-arrow {{
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;
     border-top: 5px solid {TEXT_SECONDARY};
+}}
+
+QDoubleSpinBox {{
+    background-color: {BG_INPUT};
+    color: {TEXT_PRIMARY};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 4px 8px;
+    min-height: 24px;
+}}
+QDoubleSpinBox:hover {{
+    border-color: {ACCENT};
+}}
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
+    background-color: {BG_SURFACE};
+    border: none;
+    width: 16px;
+}}
+QDoubleSpinBox::up-arrow {{
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid {TEXT_SECONDARY};
+}}
+QDoubleSpinBox::down-arrow {{
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid {TEXT_SECONDARY};
+}}
+
+QSlider::groove:horizontal {{
+    background-color: {BG_INPUT};
+    border: 1px solid {BORDER};
+    border-radius: 3px;
+    height: 6px;
+}}
+QSlider::handle:horizontal {{
+    background-color: {ACCENT};
+    border: none;
+    border-radius: 6px;
+    width: 12px;
+    margin: -4px 0;
+}}
+QSlider::sub-page:horizontal {{
+    background-color: {ACCENT};
+    border-radius: 3px;
 }}
 
 QTabWidget::pane {{
@@ -352,9 +399,70 @@ class MainWindow(QMainWindow):
         layout.addRow("Blur Kernel Size:", self.spin_blur)
 
         self.combo_analysis = QComboBox()
-        self.combo_analysis.addItems(["Edge + Box Counting", "Differential Box Counting (DBC)", "Fourier Slope"])
+        self.combo_analysis.addItems(["Moisy Threshold + Box Counting",
+                                       "Edge + Box Counting",
+                                       "Differential Box Counting (DBC)",
+                                       "Fourier Slope"])
         self.combo_analysis.currentIndexChanged.connect(self.toggle_edge_settings)
         layout.addRow("Analysis Method:", self.combo_analysis)
+
+        # --- Moisy-specific settings ---
+        # Binarization threshold slider + spinbox
+        moisy_thresh_widget = QWidget()
+        moisy_thresh_layout = QHBoxLayout(moisy_thresh_widget)
+        moisy_thresh_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.slider_moisy_thresh = QSlider(Qt.Horizontal)
+        self.slider_moisy_thresh.setRange(1, 99)  # 0.01–0.99
+        self.slider_moisy_thresh.setValue(25)      # 0.25
+        self.slider_moisy_thresh.setToolTip(
+            "Threshold for grayscale\u2192binary conversion (0\u20131 scale). "
+            "Default 0.25 matches published method.")
+
+        self.spin_moisy_thresh = QDoubleSpinBox()
+        self.spin_moisy_thresh.setRange(0.01, 0.99)
+        self.spin_moisy_thresh.setSingleStep(0.01)
+        self.spin_moisy_thresh.setDecimals(2)
+        self.spin_moisy_thresh.setValue(0.25)
+        self.spin_moisy_thresh.setToolTip(self.slider_moisy_thresh.toolTip())
+
+        # Keep slider and spinbox in sync
+        self.slider_moisy_thresh.valueChanged.connect(
+            lambda v: self.spin_moisy_thresh.setValue(v / 100.0))
+        self.spin_moisy_thresh.valueChanged.connect(
+            lambda v: self.slider_moisy_thresh.setValue(int(v * 100)))
+
+        moisy_thresh_layout.addWidget(self.slider_moisy_thresh, stretch=1)
+        moisy_thresh_layout.addWidget(self.spin_moisy_thresh)
+        self.lbl_moisy_thresh = QLabel("Binarization Threshold:")
+        layout.addRow(self.lbl_moisy_thresh, moisy_thresh_widget)
+
+        # Scale range spinboxes
+        scale_range_widget = QWidget()
+        scale_range_layout = QHBoxLayout(scale_range_widget)
+        scale_range_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.spin_scale_start = QSpinBox()
+        self.spin_scale_start.setRange(1, 15)
+        self.spin_scale_start.setValue(4)
+        self.spin_scale_start.setToolTip(
+            "MATLAB-indexed range of local slopes to average. "
+            "Default 4\u20138 uses mid-range scales.")
+
+        self.spin_scale_end = QSpinBox()
+        self.spin_scale_end.setRange(1, 15)
+        self.spin_scale_end.setValue(8)
+        self.spin_scale_end.setToolTip(self.spin_scale_start.toolTip())
+
+        scale_range_layout.addWidget(QLabel("Start:"))
+        scale_range_layout.addWidget(self.spin_scale_start)
+        scale_range_layout.addWidget(QLabel("End:"))
+        scale_range_layout.addWidget(self.spin_scale_end)
+        self.lbl_scale_range = QLabel("Scale Range:")
+        layout.addRow(self.lbl_scale_range, scale_range_widget)
+
+        # Trigger initial visibility
+        self.toggle_edge_settings()
 
         # GPU / CPU status indicator
         if GPU_AVAILABLE:
@@ -368,13 +476,25 @@ class MainWindow(QMainWindow):
         self.settings_panel.setLayout(layout)
 
     def toggle_edge_settings(self):
-        # Disable edge settings if not Box Counting
         method = self.combo_analysis.currentText()
         is_edge = "Edge" in method
+        is_moisy = "Moisy" in method
 
+        # Edge-specific controls
         self.combo_method.setEnabled(is_edge)
         self.combo_threshold.setEnabled(is_edge)
         self.spin_blur.setEnabled(is_edge)
+
+        # Moisy-specific controls
+        self.slider_moisy_thresh.setVisible(is_moisy)
+        self.spin_moisy_thresh.setVisible(is_moisy)
+        self.lbl_moisy_thresh.setVisible(is_moisy)
+        self.spin_scale_start.setVisible(is_moisy)
+        self.spin_scale_end.setVisible(is_moisy)
+        self.lbl_scale_range.setVisible(is_moisy)
+        # Also hide the parent widgets of scale range
+        self.spin_scale_start.parent().setVisible(is_moisy)
+        self.spin_moisy_thresh.parent().setVisible(is_moisy)
 
     def _style_figure(self, fig, ax):
         """Apply dark theme to a matplotlib figure and axes."""
@@ -593,6 +713,7 @@ class MainWindow(QMainWindow):
             return
 
         analysis_map = {
+            "Moisy Threshold + Box Counting": "moisy_boxcount",
             "Edge + Box Counting": "box_counting",
             "Differential Box Counting (DBC)": "dbc",
             "Fourier Slope": "fourier"
@@ -603,7 +724,9 @@ class MainWindow(QMainWindow):
             'edge_method': self.combo_method.currentText(),
             'threshold_mode': self.combo_threshold.currentText(),
             'blur_kernel_size': self.spin_blur.value(),
-            'analysis_type': analysis_map.get(self.combo_analysis.currentText(), 'box_counting')
+            'analysis_type': analysis_map.get(self.combo_analysis.currentText(), 'moisy_boxcount'),
+            'moisy_threshold': self.spin_moisy_thresh.value(),
+            'scale_range': (self.spin_scale_start.value(), self.spin_scale_end.value()),
         }
 
         self.analysis_thread = AnalysisThread(self.current_video_path, settings)
@@ -631,6 +754,7 @@ class MainWindow(QMainWindow):
         # Store only numeric data (not images) to prevent memory leak
         frame = result.pop('frame', None)
         edges = result.pop('edges', None)
+        result.pop('df', None)  # local slopes array (not needed in CSV)
         self.results_data.append(result)
 
         # Throttle plot updates — only redraw plots every 3 frames
@@ -654,25 +778,53 @@ class MainWindow(QMainWindow):
             # Update Log-Log plot
             scales = result['scales']
             counts = result['counts']
+            method = result.get('method', 'box_counting')
             # Check if arrays are not empty. Use len() as they might be numpy arrays.
             if len(scales) > 0 and len(counts) > 0:
-                self.line_log.set_data(scales, counts)
-                self.ax_log.relim()
-                self.ax_log.autoscale_view()
-                reliability = "" if result.get('reliable', True) else " [UNRELIABLE]"
-                title_text = f"Log-Log (D={result['D']:.2f}, R\u00b2={result['R2']:.2f})"
-                if reliability:
-                    self.ax_log.set_title(title_text + reliability, color=ERROR_RED)
-                else:
-                    self.ax_log.set_title(title_text, color=TEXT_PRIMARY)
+                self.ax_log.clear()
+                self._style_figure(self.fig_log, self.ax_log)
 
-                method = result.get('method', 'box_counting')
-                if method == 'fourier':
-                    self.ax_log.set_xlabel("log(Frequency)")
-                    self.ax_log.set_ylabel("log(Power)")
+                if method == 'moisy_boxcount':
+                    # Moisy: log(R) vs log(N), highlight selected scale range
+                    self.ax_log.plot(scales, counts, 'o-', color=ERROR_RED, markersize=4)
+
+                    # Highlight the scale-range points used for D
+                    sr = result.get('scale_range', '4-8')
+                    parts = sr.split('-')
+                    lo = int(parts[0]) - 1   # MATLAB→Python
+                    hi = int(parts[1])
+                    # The scale/count arrays have length p+1; indices lo..hi-1 in
+                    # the df array correspond to the *intervals* between adjacent
+                    # (scale, count) points.  Highlight points lo..hi (inclusive).
+                    lo_pt = max(0, lo)
+                    hi_pt = min(len(scales), hi + 1)
+                    self.ax_log.plot(scales[lo_pt:hi_pt], counts[lo_pt:hi_pt],
+                                    's', color=ACCENT, markersize=8, zorder=5,
+                                    label=f"Scales {parts[0]}\u2013{parts[1]}")
+
+                    D = result['D']
+                    D_std = result.get('D_std', 0)
+                    title_text = f"Log-Log  D = {D:.4f} \u00b1 {D_std:.4f}"
+                    self.ax_log.set_title(title_text, color=TEXT_PRIMARY)
+                    self.ax_log.set_xlabel("log(R)")
+                    self.ax_log.set_ylabel("log(N)")
+                    self.ax_log.legend(facecolor=BG_SURFACE, edgecolor=BORDER,
+                                       labelcolor=TEXT_PRIMARY, fontsize='small')
                 else:
-                    self.ax_log.set_xlabel("log(1/s)")
-                    self.ax_log.set_ylabel("log(N(s))")
+                    self.ax_log.plot(scales, counts, 'o-', color=ERROR_RED, markersize=4)
+                    reliability = "" if result.get('reliable', True) else " [UNRELIABLE]"
+                    title_text = f"Log-Log (D={result['D']:.2f}, R\u00b2={result['R2']:.2f})"
+                    if reliability:
+                        self.ax_log.set_title(title_text + reliability, color=ERROR_RED)
+                    else:
+                        self.ax_log.set_title(title_text, color=TEXT_PRIMARY)
+
+                    if method == 'fourier':
+                        self.ax_log.set_xlabel("log(Frequency)")
+                        self.ax_log.set_ylabel("log(Power)")
+                    else:
+                        self.ax_log.set_xlabel("log(1/s)")
+                        self.ax_log.set_ylabel("log(N(s))")
 
                 self.canvas_log.draw()
 
@@ -687,7 +839,7 @@ class MainWindow(QMainWindow):
             self.lbl_frame.setPixmap(QPixmap.fromImage(qt_image).scaled(self.lbl_frame.size(), Qt.KeepAspectRatio))
 
         if edges is not None:
-            # Edges is grayscale
+            edges = np.ascontiguousarray(edges)
             h, w = edges.shape
             bytes_per_line = w
             qt_image = QImage(edges.data, w, h, bytes_per_line, QImage.Format_Grayscale8)
@@ -789,6 +941,12 @@ class MainWindow(QMainWindow):
                     "total_frames": len(s),
                     "video_path": self.current_video_path
                 }
+                # Add Moisy-specific summary fields if applicable
+                if 'D_std' in df.columns:
+                    summary["mean_D_std"] = float(df['D_std'].mean())
+                    summary["threshold"] = float(df['threshold'].iloc[0])
+                    summary["padded_size"] = int(df['padded_size'].iloc[0])
+                    summary["scale_range"] = str(df['scale_range'].iloc[0])
 
                 with open(json_path, 'w') as f:
                     json.dump(summary, f, indent=4)

@@ -1,3 +1,5 @@
+import math
+
 import cv2
 import numpy as np
 import scipy.stats
@@ -232,6 +234,99 @@ class FractalAnalyzer:
         D = (8 - beta) / 2
         
         return D, r_value**2, log_freqs, log_powers
+
+    # ------------------------------------------------------------------
+    # Moisy box-counting  (exact port of Frédéric Moisy's MATLAB boxcount)
+    # ------------------------------------------------------------------
+
+    def moisy_boxcount(self, binary_image):
+        """Coarsening box-count on a 2-D boolean array.
+
+        Returns (n, r) where n[g] is the box count at scale r[g] = 2**g.
+        """
+        width = max(binary_image.shape)
+        p = math.ceil(math.log2(width))
+        width = 2 ** p
+
+        # Zero-pad to (width, width), original in top-left corner
+        c = np.zeros((width, width), dtype=bool)
+        c[:binary_image.shape[0], :binary_image.shape[1]] = binary_image
+
+        n = np.zeros(p + 1, dtype=np.int64)
+        r = np.zeros(p + 1, dtype=np.int64)
+
+        # Scale R = 1  (pixel-level)
+        n[0] = int(np.sum(c))
+        r[0] = 1
+
+        for g in range(1, p + 1):
+            # Coarsen: logical OR of each 2×2 block
+            c = c[0::2, 0::2] | c[1::2, 0::2] | c[0::2, 1::2] | c[1::2, 1::2]
+            n[g] = int(np.sum(c))
+            r[g] = 2 ** g
+
+        return n, r
+
+    def moisy_fractal_dimension(self, n, r, scale_range=(4, 8)):
+        """Compute D from local slopes, averaged over *scale_range*.
+
+        *scale_range* uses MATLAB 1-based indexing into the df array
+        (length p).  MATLAB ``df(4:8)`` → Python ``df[3:8]``.
+
+        Returns (D, D_std, df_array).
+        """
+        with np.errstate(divide='ignore', invalid='ignore'):
+            log_n = np.log(n.astype(float))
+            log_r = np.log(r.astype(float))
+
+            # Local slopes (length = len(n) - 1 = p)
+            df = -np.diff(log_n) / np.diff(log_r)
+
+        lo = scale_range[0] - 1          # MATLAB→Python
+        hi = scale_range[1]              # Python slice end is exclusive
+
+        # Clamp to valid range
+        lo = max(0, lo)
+        hi = min(len(df), hi)
+
+        if hi <= lo:
+            return 0.0, 0.0, df
+
+        D = float(np.mean(df[lo:hi]))
+        D_std = float(np.std(df[lo:hi]))
+        return D, D_std, df
+
+    def analyze_frame_moisy(self, frame, threshold=0.25, scale_range=(4, 8)):
+        """Full per-frame pipeline for Moisy method.
+
+        grayscale → threshold → boxcount → fractal dimension.
+        No edge detection, no blur.
+        """
+        if frame is None:
+            return 0.0, 0.0, np.array([]), np.array([]), np.array([]), None
+
+        if len(frame.shape) == 3:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = frame
+
+        _, bw = cv2.threshold(gray, int(threshold * 255), 1, cv2.THRESH_BINARY)
+        bw = bw.astype(bool)
+
+        if not np.any(bw):
+            # Completely black frame — no foreground pixels
+            return 0.0, 0.0, np.array([0]), np.array([1]), np.array([]), bw
+
+        n, r = self.moisy_boxcount(bw)
+        D, D_std, df = self.moisy_fractal_dimension(n, r, scale_range)
+
+        # Guard against NaN from degenerate frames
+        if np.isnan(D):
+            D = 0.0
+        if np.isnan(D_std):
+            D_std = 0.0
+
+        return D, D_std, n, r, df, bw
 
     def generate_sierpinski_triangle(self, size=1024, n_points=500_000):
         """
