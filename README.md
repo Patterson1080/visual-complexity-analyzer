@@ -27,11 +27,12 @@ python main.py
 
 ## How to Use
 
-1. **Load Video** — Click to open a video file (.mp4, .avi, .mov, .mkv)
-2. **Start Analysis** — Begins processing frames and calculating fractal dimension over time
-3. **Stop** — Stops analysis early if needed
-4. **Batch Process Folder** — Analyze all videos in a folder automatically. Results (CSV, plot images, JSON summaries) are saved next to each video file
-5. **Export Results** — Save the analysis data as a CSV file
+1. **Load Video** — Click to open a video file (.mp4, .avi, .mov, .mkv). The Clip Range fields automatically populate with the video's duration
+2. **Set Clip Range** *(optional)* — Use the `HH:MM:SS → HH:MM:SS` fields to restrict analysis to a specific portion of the video. Useful for skipping black leaders/endings or focusing on a particular scene. Setting the end time to `00:00:00` analyzes to the end of the video
+3. **Start Analysis** — Begins processing frames and calculating fractal dimension over time. Progress bar reflects only the selected clip range
+4. **Stop** — Stops analysis early if needed
+5. **Batch Process Folder** — Analyze all videos in a folder automatically. Results (CSV, plot images, JSON summaries) are saved next to each video file
+6. **Export Results** — Save the analysis data as a CSV file. The exported D(t) timeseries plot always shows the **complete analyzed timeline**, regardless of the current pan/zoom view
 
 ## Analysis Methods
 
@@ -100,7 +101,7 @@ The same video can yield different D values depending on the method — this is 
 - **Original Frame** — The current video frame being analyzed
 - **Processed Frame** — The detected edges (Edge + Box Counting) or binarized image (Moisy method)
 - **Log-Log Plot** — Shows the mathematical relationship used to calculate D. For the Moisy method, gold markers highlight the scale range used to compute D, and the title shows D ± std. For other methods, if marked `[UNRELIABLE]` in red the R² fit is poor and the D value may not be meaningful
-- **D(t) Plot** — Fractal dimension over time, showing how visual complexity changes throughout the video
+- **D(t) Plot** — Fractal dimension over time. The interactive view uses a sliding 30-second window; the exported PNG always shows the full timeline
 
 ### Summary Tab
 
@@ -111,6 +112,7 @@ The same video can yield different D values depending on the method — this is 
 
 | Setting | What it does |
 |---------|-------------|
+| Clip Range | `HH:MM:SS → HH:MM:SS` start and end times. Auto-filled from video duration on load. End `00:00:00` = analyze to end of video |
 | Sampling Rate | Analyze every Nth frame. Set to `1` for every frame, `10` to skip 9 out of 10 frames (faster but less detailed) |
 | Analysis Method | Choose between Moisy Threshold + Box Counting (default), Edge + Box Counting, DBC, or Fourier Slope |
 | Binarization Threshold | *(Moisy only)* Brightness cutoff (0–1) for grayscale→binary conversion. Default `0.25` matches the published method |
